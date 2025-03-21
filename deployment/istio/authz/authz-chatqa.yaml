@@ -34,7 +34,7 @@ spec:
     - source:
         notPrincipals:
         - cluster.local/ns/chatqa/sa/retriever-usvc
-        - cluster.local/ns/dataprep/sa/ingestion-usvc
+        - cluster.local/ns/edp/sa/edp-chart
         - cluster.local/ns/monitoring/sa/telemetry-prometheus-redis-exporter
 ---
 apiVersion: security.istio.io/v1
@@ -45,14 +45,14 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: torchserve
+      app.kubernetes.io/name: torchserve-embedding
   action: DENY
   rules:
   - from:
     - source:
         notPrincipals:
         - cluster.local/ns/chatqa/sa/embedding-usvc
-        - cluster.local/ns/dataprep/sa/embedding-usvc
+        - cluster.local/ns/edp/sa/edp-chart
         - cluster.local/ns/monitoring/sa/telemetry-kube-prometheus-prometheus
 ---
 apiVersion: security.istio.io/v1
@@ -70,6 +70,8 @@ spec:
     - source:
         notPrincipals:
         - cluster.local/ns/chatqa/sa/embedding-usvc
+        - cluster.local/ns/edp/sa/edp-chart
+        - cluster.local/ns/monitoring/sa/telemetry-kube-prometheus-prometheus
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -80,6 +82,23 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: teirerank
+  action: DENY
+  rules:
+  - from:
+    - source:
+        notPrincipals:
+        - cluster.local/ns/chatqa/sa/reranking-usvc
+        - cluster.local/ns/monitoring/sa/telemetry-kube-prometheus-prometheus
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: chatqa-torchserve-reranking-svc
+  namespace: chatqa
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: torchserve-reranking
   action: DENY
   rules:
   - from:
@@ -154,6 +173,7 @@ spec:
     - source:
         notPrincipals:
         - cluster.local/ns/chatqa/sa/default
+        - cluster.local/ns/edp/sa/edp-chart
         - cluster.local/ns/monitoring/sa/telemetry-kube-prometheus-prometheus
 ---
 # fgp-usvc
@@ -208,6 +228,7 @@ spec:
     - source:
         notPrincipals:
         - cluster.local/ns/chatqa/sa/default
+        - cluster.local/ns/edp/sa/edp-chart
         - cluster.local/ns/monitoring/sa/telemetry-kube-prometheus-prometheus
 ---
 # out-guard-usvc
@@ -261,6 +282,7 @@ spec:
     - source:
         notPrincipals:
         - cluster.local/ns/chatqa/sa/default
+        - cluster.local/ns/edp/sa/edp-chart
         - cluster.local/ns/monitoring/sa/telemetry-kube-prometheus-prometheus
 ---
 # llm-svc

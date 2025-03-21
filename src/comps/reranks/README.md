@@ -9,6 +9,7 @@ Support for specific model servers with Dockerfiles or build instruction.
 | Model server name               |  Status   |
 | ---------------------------     | --------- |
 | [TEI](./impl/model_server/tei/) | &#x2713;  |
+| [Torchserve](./impl/model_server/torchserve/) | &#x2713;  |
 | OVMS                            | &#x2717;  |
 
 
@@ -20,6 +21,7 @@ The configuration for the Reranking Microservice is specified in the [impl/micro
 |-----------------------------|----------------------------------------------------------------------------|
 | `RERANKING_USVC_PORT`       | The port of the microservice, by default 8000                              |
 | `RERANKING_SERVICE_ENDPOINT`     | The endpoint of the reranking service, e.g., "http://localhost:6060" |
+| `RERANKING_MODEL_SERVER`     | The name of model server chose, e.g. "torchserve" |
 
 
 ## Getting started
@@ -34,9 +36,13 @@ Depending on the model server you want to use, follow the approppriate instructi
 To start the Reranking microservice, you need to install python packages first.
 
 #### 1.1. Install Requirements
+To freeze the dependencies of a particular microservice, we utilize [uv](https://github.com/astral-sh/uv) project manager. So before installing the dependencies, installing uv is required.
+Next, use `uv sync` to install the dependencies. This command will create a virtual environment.
 
 ```bash
-pip install -r impl/microservice/requirements.txt
+pip install uv
+uv sync --locked --no-cache --project impl/microservice/pyproject.toml
+source impl/microservice/.venv/bin/activate
 ```
 
 #### 1.2. Start Microservice
@@ -126,33 +132,6 @@ The project is organized into several directories:
 - `impl/`: This directory contains the implementation of the supported reranking service. It includes the `model_server` directory, which contains instructions for setting up and running different model servers, for example TEI.
 
 - `utils/`: This directory contains utility scripts and modules that are used by the Reranking Microservice.
-
-The tree view of the main directories and files:
-
-```bash
-  .
-  ├── impl/
-  │   ├── microservice/
-  │   │   ├── .env
-  │   │   ├── Dockerfile
-  │   │   └── requirements.txt
-  │   │
-  │   ├── model_server/
-  │   │   ├── tei/
-  │   │   │   ├── README.md
-  │   │   │   └── docker/
-  │   │   │       ├── docker-compose.yml
-  │   │   │       └── .env
-  │   │   │
-  │   │   └── ...
-  │   └── ...
-  │
-  ├── utils/
-  │   ├── opea_reranking.py
-  │
-  ├── README.md
-  └── opea_reranking_microservice.py
-```
 
 #### Tests
 - `src/tests/unit/rerankers/`: Contains unit tests for the Reranking Microservice components

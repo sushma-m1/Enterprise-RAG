@@ -48,7 +48,7 @@ For the complete microservices architecture, refer [here](./docs/microservices_a
 | Operating System    | Ubuntu 20.04/22.04                                                                                                |
 | Hardware Platforms  | 4th Gen Intel® Xeon® Scalable processors<br>5th Gen Intel® Xeon® Scalable processors<br>6th Gen Intel® Xeon® Scalable processors<br>3rd Gen Intel® Xeon® Scalable processors and Intel® Gaudi® 2 AI Accelerator<br>4th Gen Intel® Xeon® Scalable processors and Intel® Gaudi® 2 AI Accelerator <br>6th Gen Intel® Xeon® Scalable processors and Intel® Gaudi® 3 AI Accelerator|
 | Kubernetes Version  | 1.29.5 <br> 1.29.12 <br> 1.30.8 <br> 1.31.4                                                                        |
-| Gaudi Firmware Version | 1.19.2
+| Gaudi Firmware Version | 1.20.0
 
 ## Hardware Prerequisites for Deployment using Gaudi® AI Accelerator
 
@@ -65,10 +65,16 @@ If you don't have a Gaudi® AI Accelerator, you can request these instances in [
 
 - visit [Intel® Tiber™ AI Cloud](https://console.cloud.intel.com/home).
 - In the left pane select `Catalog > Hardware`.
-- Select `Gaudi® 2 Deep Learning Server` or `Gaudi® 2 Deep Learning Server - Dell`.
-- Select the Machine image - for example: `ubuntu-2204-gaudi2-1.17.0-vm-v4` with `Architecture: X86_64 (Baremetal only)`. Please note that minor version tags may change over time.
+- Select `Gaudi® 2 Deep Learning Server` (recommended). `Gaudi® 2 Deep Learning VM` is also available but due to its resource limitation it is not recommended.
+- Select Instance Type - for best performance we recommend choosing a Bare Metal machine with 8 Gaudi devices.
+- Select the Machine image - for example: `ubuntu-2204-gaudi2-1.19.1-*` with `Architecture: X86_64 (Baremetal only)`. Please note that minor version tags may change over time.
 - Upload your public key and launch the instance
 - Navigate to the `Instances` page and verify that the machine has reached its ready state, then click on "How to Connect via SSH" to configure your machine correctly for further installation.
+
+> [!NOTE]
+> If you don't see any of the options above, you can either
+> - request the access to the instances by selecting `Preview > Preview Catalog`
+> - chat with Intel® Tiber™ AI Cloud agent by selecting question mark button in top right corner.
 
 ## Hardware Prerequisites for Deployment using Xeon only
 To deploy the solution on a platform using 4th or 5th generation Intel® Xeon® processors, you will need:

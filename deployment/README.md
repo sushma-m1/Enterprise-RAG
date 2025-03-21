@@ -14,11 +14,14 @@ This document details the deployment of Intel® AI for Enterprise RAG. By defaul
  6. [Verify Services](#verify-services)
  7. [Available Pipelines](#available-pipelines)
  8. [Interact with ChatQnA](#interact-with-chatqna)
+     1. [Test Deployment](#test-deployment)
+     2. [Access UI/Grafana](#access-the-uigrafana)
  9. [Configure ChatQnA](#configure-chatqna)
  10. [Clear Deployment](#clear-deployment)
  11. [Additional features](#additional-features)
      1. [Enabling Pod Security Admission (PSA)](#enabling-pod-security-admission-psa)
      2. [Running Enterprise RAG with Intel® Trust Domain Extensions (Intel® TDX)](#running-enterprise-rag-with-intel-trust-domain-extensions-intel-tdx)
+     3. [Single Sign On Integration using Microsoft Entra ID (formerly Azure Active Directory)](#single-sign-on-integration-using-microsoft-entra-id-formerly-azure-active-directory)
 ---
 
 ## Verify System Status
@@ -109,9 +112,11 @@ The default resource allocations are defined for Xeon only deployment in [`resou
 > [!NOTE]
 It is possible to reduce the resources allocated to the model server if you encounter issues with node capacity, but this will likely result in a performance drop. Recommended Hardware parameters to run RAG pipeline are available [here](../README.md#hardware-prerequisites-for-deployment-using-xeon-only).
 
+For Enhanced Dataprep Pipeline (EDP) configuration, please refer to a separate helm chart located in `deployment/edp/helm` folder. It does not have a separate `resources*.yaml` definition. To change resources before deployment, locate the [`values.yaml`](./edp/helm/values.yaml) file and edit definition for particular elements from that deployment.
+
 ### Skipping Warm-up for vLLM Deployment
 The `VLLM_SKIP_WARMUP` environment variable controls whether the model warm-up phase is skipped during initialization. To modify this setting, update the deployment configuration in:
- - For vLLM running on Gaudi: [vllm/docker/.env.hpu](./../src/comps/llms/impl/model_server/vllm/docker/.env.hpu)
+  - For vLLM running on Gaudi: [vllm/docker/.env.hpu](./../src/comps/llms/impl/model_server/vllm/docker/.env.hpu)
   - For vLLM running on CPU: [vllm/docker/.env.cpu](./../src/comps/llms/impl/model_server/vllm/docker/.env.cpu)
 
 > [!NOTE]
@@ -278,13 +283,12 @@ chatqa               torchserve-embedding-svc-deployment-54d498dd6f-btg2l    1/1
 chatqa               torchserve-embedding-svc-deployment-54d498dd6f-hwfz4    1/1     Running     0              21m
 chatqa               torchserve-embedding-svc-deployment-54d498dd6f-jqcfh    1/1     Running     0              21m
 chatqa               vllm-service-m-deployment-6d86b69fb-6xxr2               1/1     Running     0              21m
-dataprep             dataprep-svc-deployment-6c745cfb56-qphf2                1/1     Running     0              14m
-dataprep             embedding-svc-deployment-66fc547b67-fc7z2               1/1     Running     0              14m
-dataprep             ingestion-svc-deployment-8f96f77d-2526q                 1/1     Running     0              14m
-dataprep             router-service-deployment-6f46d49c7d-2smtb              1/1     Running     0              14m
 edp                  edp-backend-559948896d-f9xkq                            1/1     Running     0              13m
 edp                  edp-celery-7b999df6fb-p7j84                             1/1     Running     1 (7m4s ago)   13m
+edp                  edp-dataprep-76b895d445-wh629                           1/1     Running     0              13m
+edp                  edp-embedding-844f9c9c97-tq49m                          1/1     Running     0              13m
 edp                  edp-flower-554594dd4d-6z666                             1/1     Running     0              13m
+edp                  edp-ingestion-bc559885f-s7qsp                           1/1     Running     0              13m
 edp                  edp-minio-5948fbc87f-6d8lq                              1/1     Running     0              13m
 edp                  edp-minio-provisioning-7rx98                            0/1     Completed   0              12m
 edp                  edp-postgresql-0                                        1/1     Running     0              13m
@@ -365,21 +369,27 @@ data: [DONE]
 Test finished succesfully
 ```
 
-### Access the UI
+### Access the UI/Grafana
 
-To access the cluster, please update the `/etc/hosts` file on your machine to match the domain name with the externally
-exposed IP address of the cluster.
-
-For example, the updated file content should resemble the following:
-
+To access the UI, do the following:
+1. Forward the port from the ingress pod.
+```bash
+sudo -E kubectl port-forward --namespace ingress-nginx svc/ingress-nginx-controller 443:https
 ```
-<Ingress external IP> erag.com grafana.erag.com auth.erag.com s3.erag.com minio.erag.com
+2. If you'd like to access the UI from another machine, tunel the port from the host:
+```bash
+ssh -L 443:localhost:443 user@ip
+```
+3. Update `/etc/hosts` file on the machine where you'd like to access the UI to match the domain name with the externally exposed IP address of the cluster. On a Windows machine, this file is typically located at `C:\Windows\System32\drivers\etc\hosts`.
+
+     For example, the updated file content should resemble the following:
+
+```bash
+127.0.0.1 erag.com grafana.erag.com auth.erag.com s3.erag.com minio.erag.com
 ```
 
 > [!NOTE]
 > This is the IPv4 address of local machine.
-
-On a Windows machine, this file is typically located at `C:\Windows\System32\drivers\etc\hosts`.
 
 Once the update is complete, you can access the Enterprise RAG UI by typing the following URL in your web browser:
 `https://erag.com`
@@ -396,12 +406,15 @@ MinIO Console can be accessed via:
 S3 API is exposed at:
 `https://s3.erag.com`
 
+> [!CAUTION]
+> Before ingesting the data, access the `https://s3.erag.com` to agree to accessing the self-signed certificate.
+
 ### UI credentials for the first login
 
 Once deployment is complete, there will be file `default_credentials.txt` created in `deployment` folder with one time passowrds for application admin and user. After one time password will be provided you will be requested to change the default password.
 
 > [!CAUTION]
-> Please remove file `default_credentials.txt` after the first succesfull login.
+> Please remove file `default_credentials.txt` after the first succesful login.
 
 ### Credentials for Grafana and Keycloak
 
@@ -463,3 +476,51 @@ For deploying ChatQnA components with Intel® Trust Domain Extensions (Intel® T
 
 > [!NOTE]
 > Intel TDX feature in Enterprise RAG is experimental.
+
+### Single Sign On Integration using Microsoft Entra ID (formerly Azure Active Directory)
+
+#### Prerequisites
+
+1. Configured and working Microsoft Entra ID 
+     - preconfigured and working SSO for other applications
+     - two new groups - one for `erag-admins`, one for `erag-users` - save `Object ID` for those entitites
+     - defined some user accounts that can be later added to either `erag-admins` or `erag-users` groups 
+2. Registered a new Azure `App registration`
+     - configured with Redirect URI `https://auth.erag.com/realms/EnterpriseRAG/broker/oidc/endpoint`
+     - in App registration -> Overview - save the `Application (client) ID` value
+     - in App registration -> Overview -> Endpoints - save `OpenID Connect metadata document` value
+     - in App registration -> Manage -> Cerficiates & secrets -> New client secret - create and save `Client secret` value
+3. Add users to newly created groups, either `erag-admins` or `erag-users` in Microsoft Entra ID
+
+#### Keycloak configuration
+
+To configure Enterprise RAG SSO using Azure Single Sign On use the following steps:
+
+1. Log in as `admin` user into Keycloak and select `EnterpriseRAG` realm.
+2. Choose `Identity providers` from the left menu.
+3. Add a new `OpenID Connect Identity Provider` and configure:
+     - Field `Alias` - enter your SSO alias, for example `enterprise-sso`
+     - Field `Display name` - enter your link display name to redirect to external SSO, for example `Enterprise SSO`
+     - Field `Discovery endpoint` - enter your `OpenID Connect metadata document`. Configuration fields should autopopulate
+4. Choose `Groups` in left menu. Then create the following groups:
+     1. `erag-admin-group` should consist of following groups from keycloak:
+          - `(EnterpriseRAG-oidc) ERAG-admin`
+          - `(EnterpriseRAG-oidc-backend) ERAG-admin`
+          - `(EnterpriseRAG-oidc-minio) consoleAdmin` # if using internal MinIO
+     2. `erag-user-group` should consist of following groups from keycloak:
+          - `(EnterpriseRAG-oidc) ERAG-user`
+          - `(EnterpriseRAG-oidc-backend) ERAG-user`
+          - `(EnterpriseRAG-oidc-minio) readonly` # if using internal MinIO
+5. Configure two `Identity mappers` in `Mappers` under created `Identity provider`
+     1. Add Identity Provider Mapper - for group `erag-admin-group`
+          - Field `Name` - this is the `Object ID` from `erag-admins` from Microsoft Entra ID
+          - Field `Mapper type` - enter `Hardcoded Group`
+          - Field `Group` - select `erag-admin-group`
+     2. Add Identity Provider Mapper - for group `erag-user-group`
+          - Field `Name` - this is the `Object ID` from `erag-users` from Microsoft Entra ID
+          - Field `Mapper type` - enter `Hardcoded Group`
+          - Field `Group` - select `erag-user-group`
+
+After this configuration, Keycloak log-in page should have an additional link on the bottom of the log-in form - named `Enterprise SSO`. This should redirect you to Azure log-in page.
+
+Depending on users' group membership in Microsoft Entra ID (either `erag-admins` or `erag-users`) users will have apropriate permissions mapped. For example, `erag-admins` will have access to the admin panel.

@@ -10,11 +10,10 @@ metadata:
 spec:
   namespaceSelector:
     matchNames:
-    - dataprep
     - chatqa
   selector:
     matchLabels:
-      app.kubernetes.io/instance: torchserve
+      app.kubernetes.io/instance: torchserve_embedding
   endpoints:
   - port: "metrics"
 {{- end }}

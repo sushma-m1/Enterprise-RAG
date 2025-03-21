@@ -2,23 +2,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-from typing import List
+import re
+from typing import List, Union
 import uuid
 import validators
 import uvicorn
+from datetime import timedelta
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from dotenv import load_dotenv
-from minio import Minio
 from minio.error import S3Error
-from minio.credentials import EnvMinioProvider
-from datetime import timedelta
 from urllib.parse import unquote_plus
-from app.utils import generate_presigned_url
+from app.utils import generate_presigned_url, get_local_minio_client, get_remote_minio_client
 from app.database import get_db, init_db
-from app.models import FileResponse, FileStatus, LinkRequest, LinkResponse, LinkStatus, PresignedRequest, MinioEventData, PresignedResponse
+from app.models import FileResponse, FileStatus, LinkRequest, LinkResponse, LinkStatus, PresignedRequest, MinioEventData, S3EventData, PresignedResponse
 from app.tasks import process_file_task, delete_file_task, process_link_task, delete_link_task, celery
 from celery.result import AsyncResult
 from comps.cores.mega.logger import change_opea_logger_level, get_opea_logger
@@ -37,11 +36,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "./.env"))
 logger = get_opea_logger("edp_microservice")
 change_opea_logger_level(logger, log_level=os.getenv("OPEA_LOGGER_LEVEL", "INFO"))
 
-minio = Minio(
-    os.getenv('MINIO_BASE_URL', 'localhost'),
-    credentials=EnvMinioProvider(),
-    secure=False
-)
+minio_external = get_remote_minio_client()
+minio_internal = get_local_minio_client()
 
 @app.get('/health')
 def health_check():
@@ -101,7 +97,7 @@ async def metrics():
         gauge_total_chunks = Gauge(name='edp_chunks_total', documentation='Total number of chunks', registry=registry)
         gauge_total_chunks.set((files_chunks.chunks_total_sum or 0) + (links_chunks.chunks_total_sum or 0))
 
-        for obj_status in 'uploaded, error, processing, dataprep, embedding, ingested, deleting, canceled'.split(', '):
+        for obj_status in 'uploaded, error, processing, dataprep, dpguard, embedding, ingested, deleting, canceled, blocked'.split(', '):
             file_count = files_statuses.get(obj_status, 0)
             file_gauge = Gauge(name=f'edp_files_{obj_status}_total', documentation=f'Total number of files with status {obj_status}', registry=registry)
             file_gauge.set(file_count)
@@ -184,14 +180,30 @@ def presigned_url(input: PresignedRequest, request: Request) -> PresignedRespons
     if method == 'DELETE':
         expiry = timedelta(seconds=60)
 
+    region = os.getenv('EDP_BASE_REGION', None)
     try:
-        url = generate_presigned_url(method, bucket_name, object_name, expiry)
+        url = generate_presigned_url(minio_external, method, bucket_name, object_name, expiry, region)
         logger.debug(f"Generated presigned url for [{method}] {bucket_name}/{object_name}")
         return PresignedResponse(url=url)
     except S3Error as e:
         logger.error(f"An error occurred: {e}")
         raise HTTPException(status_code=400, detail="An error occurred while generating a presigned URL.")
 
+@app.get('/api/list_buckets')
+def list_buckets():
+    """
+    List all buckets in the MinIO storage.
+    Returns:
+        Response: A JSON response containing a list of buckets.
+    """
+    buckets = minio_internal.list_buckets()
+    bucket_names = [bucket.name for bucket in buckets]
+    regex_filter = str(os.getenv('BUCKET_NAME_REGEX_FILTER', ''))
+    if len(regex_filter) > 0:
+        bucket_names = [name for name in bucket_names if re.match(regex_filter, name)]
+        logger.debug(f"Displaying {len(bucket_names)}/{len(buckets)} buckets after applying regex filter: {regex_filter}")
+
+    return JSONResponse(content={'buckets': bucket_names})
 
 # -------------- Event processing ------------
 
@@ -360,7 +372,7 @@ def delete_existing_link(uri):
                 logger.debug(f"Link {link_status.id} deletion task enqueued with id {task.id}")
 
 @app.post('/minio_event')
-def process_minio_event(event: MinioEventData, request: Request):
+def process_minio_event(event: Union[S3EventData, MinioEventData], request: Request):
     """
     Processes events from MinIO.
     This function handles events related to object creation and deletion in a MinIO bucket.
@@ -372,29 +384,36 @@ def process_minio_event(event: MinioEventData, request: Request):
     Returns:
         Response: A JSON response indicating the result of the event processing.
     """
-
-    if event.EventName in ['s3:ObjectCreated:Put', 's3:ObjectCreated:CompleteMultipartUpload']:
-        for record in event.Records:
+    files_added = 0
+    files_deleted = 0
+    for record in event.Records:
+        if record.eventName in ['s3:ObjectCreated:Put', 's3:ObjectCreated:CompleteMultipartUpload', 'ObjectCreated:Put', 'ObjectCreated:CompleteMultipartUpload']:
             bucket_name = unquote_plus(record.s3.bucket.name)
             object_name = unquote_plus(record.s3.object.key)
             etag = record.s3.object.eTag
             content_type = record.s3.object.contentType
             size = record.s3.object.size or 0
-
             try:
                 add_new_file(bucket_name, object_name, etag, content_type, size)
             except Exception as e:
                 logger.error(f"Error adding file to database: {e}")
-        return JSONResponse(content={'message': 'File(s) uploaded successfully'})
-    
-    if event.EventName in ['s3:ObjectRemoved:Delete', 's3:ObjectRemoved:NoOP', 's3:ObjectRemoved:DeleteMarkerCreated']:
-        for record in event.Records:
+            files_added += 1
+            return JSONResponse(content={'message': 'File(s) uploaded successfully'})
+
+        if record.eventName in ['s3:ObjectRemoved:Delete', 's3:ObjectRemoved:NoOP', 's3:ObjectRemoved:DeleteMarkerCreated', 'ObjectRemoved:Delete', 'ObjectRemoved:DeleteMarkerCreated']:
             bucket_name = unquote_plus(record.s3.bucket.name)
             object_name = unquote_plus(record.s3.object.key)
             try:
                 delete_existing_file(bucket_name, object_name)
             except Exception as e:
                 logger.error(f"Error deleting existing file: {e}")
+            files_deleted += 1
+
+    if files_added > 0 and files_deleted > 0:
+        return JSONResponse(content={'message': 'File(s) uploaded and deleted successfully'})
+    if files_added > 0:
+        return JSONResponse(content={'message': 'File(s) uploaded successfully'})
+    if files_deleted > 0:
         return JSONResponse(content={'message': 'File(s) deleted successfully'})
 
     raise HTTPException(status_code=501, detail="Event not implemented")
@@ -496,7 +515,7 @@ def api_link_task_retry(link_uuid: str, request: Request):
     """
     Retry processing a link by its UUID.
 
-    This endpoint validates the provided link UUID, and 
+    This endpoint validates the provided link UUID, and
     attempts to reset and reprocess the link if it exists in the database.
 
     Args:
@@ -688,12 +707,12 @@ def api_sync(request: Request):
             buckets = []
 
             if bucket:
-                buckets = [minio.get_bucket(bucket)]
+                buckets = [minio_internal.get_bucket(bucket)]
             else:
-                buckets = minio.list_buckets()
+                buckets = minio_internal.list_buckets()
 
             for bucket in buckets:
-                minio_files = minio.list_objects(bucket.name)
+                minio_files = minio_internal.list_objects(bucket.name)
                 for obj in minio_files:
                     file_status = db.query(FileStatus).filter(FileStatus.bucket_name == bucket.name, FileStatus.object_name == obj.object_name).first()
                     if file_status:
@@ -719,6 +738,97 @@ def api_sync(request: Request):
         except S3Error as e:
             raise HTTPException(status_code=400, detail=f"An error occurred: {e}")
 
+# -------------- Debugging Features ---------------
+
+@app.post("/api/file/{file_uuid}/extract")
+def api_file_text_extract(file_uuid: str, request: Request):
+    try:
+        file_id = uuid.UUID(file_uuid, version=4)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid file_id passed: {file_uuid}")
+
+    with get_db() as db:
+        file = db.query(FileStatus).filter(FileStatus.id == file_id).first()
+
+        try:
+            import base64
+            import requests
+
+            minio_response = minio_internal.get_object(bucket_name=file.bucket_name, object_name=file.object_name)
+            file_data = minio_response.read()
+            file_base64 = base64.b64encode(file_data).decode('ascii')
+            logger.debug(f"[{file.id}] Retrievied file from S3 storage.")
+
+            DATAPREP_ENDPOINT  = os.environ.get('DATAPREP_ENDPOINT')
+            response = requests.post(DATAPREP_ENDPOINT, json={
+                'files': [ {'filename': file.object_name, 'data64': file_base64} ],
+                'chunk_size': request.query_params.get('chunk_size', 512),
+                'chunk_overlap': request.query_params.get('chunk_overlap', 0),
+                'process_table': request.query_params.get('process_table', 'false'),
+                'table_strategy': request.query_params.get('table_strategy', 'fast'),
+            })
+
+            if response.status_code != 200:
+                return JSONResponse(content={'details': f"Something went wrong: {response.text}"})
+            else:
+                return JSONResponse(content={'docs': response.json()})
+        except S3Error as e:
+            raise HTTPException(status_code=500, detail=f"Error downloading file. {e}")
+        finally:
+            minio_response.close()
+            minio_response.release_conn()
+
+@app.post("/api/retrieve")
+async def api_retrieve(request: Request):
+    try:
+        import requests
+        EMBEDDING_ENDPOINT  = os.environ.get('EMBEDDING_ENDPOINT')
+        RETRIEVER_ENDPOINT  = os.environ.get('RETRIEVER_ENDPOINT')
+        RERANKER_ENDPOINT  = os.environ.get('RERANKER_ENDPOINT')
+
+        d = await request.json()
+        logger.debug(d)
+
+        def get_f(data, field, default=None):
+            return data.get(field, default)
+
+        embedding_request = { 'text': get_f(d, 'query') }
+        logger.debug(f"Request to embedding: {embedding_request}")
+        response = requests.post(EMBEDDING_ENDPOINT, json=embedding_request)
+
+        if response.status_code != 200:
+            return JSONResponse(content={'details': f"Embedding went wrong: {response.text}"})
+
+        retriever_request = response.json()
+        retriever_request['search_type'] = get_f(d, 'search_type', 'similarity')
+        retriever_request['k'] =  get_f(d, 'k', '32')
+        retriever_request['distance_threshold'] =  get_f(d, 'distance_threshold', None)
+        retriever_request['fetch_k'] =  get_f(d, 'fetch_k', '20')
+        retriever_request['lambda_mult'] =  get_f(d, 'lambda_mult', '0.5')
+        retriever_request['score_threshold'] =  get_f(d, 'score_threshold', '0.2')
+
+        logger.debug(f"Request to retriever: {retriever_request}")
+        response = requests.post(RETRIEVER_ENDPOINT, json=retriever_request)
+
+        if str(get_f(d, 'reranker', 'false')).lower() == 'true':
+            reranker_request = response.json()
+            reranker_request['top_n'] =  get_f(d, 'top_n', '5')
+
+            logger.debug(f"Request to reranker: {reranker_request}")
+            request = requests.post(RERANKER_ENDPOINT, json=reranker_request)
+            if request.status_code != 200:
+                return JSONResponse(content={'details': f"Reranker went wrong: {request.text}"})
+            else:
+                return JSONResponse(content={'docs': request.json()})
+
+        if response.status_code != 200:
+            return JSONResponse(content={'details': f"Retriever went wrong: {response.text}"})
+        else:
+            return JSONResponse(content={'docs': response.json()})
+    except Exception as e:
+        return JSONResponse(content={'details': f"Something went wrong: {e}"})
+
+# ---------------------------------------
 
 if __name__ == '__main__':
     init_db()

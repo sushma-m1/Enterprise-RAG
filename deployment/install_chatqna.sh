@@ -28,7 +28,6 @@ KEYCLOAK_FPORT=1234
 DEPLOYMENT_NS=chatqa
 FINGERPRINT_NS=fingerprint
 GATEWAY_NS=auth-apisix
-DATAPREP_NS=dataprep
 ENHANCED_DATAPREP_NS=edp
 TELEMETRY_NS=monitoring
 TELEMETRY_TRACES_NS=monitoring-traces
@@ -79,11 +78,13 @@ function usage() {
     echo -e "\t--deploy <PIPELINE_NAME>: Start the deployment process."
     echo -e "\tPipelines available: $available_pipelines"
     echo -e "\t--tag <TAG>: Use specific tag for deployment."
+    echo -e "\t--use-alternate-tagging: Use repo:component_tag tagging format instead of the default (repo/component:tag)."
     echo -e "\t--test: Run a connection test."
     echo -e "\t--telemetry: Start telemetry services."
     echo -e "\t--registry <REGISTRY>: Use specific registry for deployment."
     echo -e "\t--ui: Start ui services (requires deployment & auth)."
     echo -e "\t--no-edp: Skip creation of Enhanced Dataprep Pipeline."
+    echo -e "\t--dpguard: Create Dataprep Guardrail."
     echo -e "\t-ep|--enforce-pss: Enforce strict pod security policies."
     echo -e "\t--upgrade: Helm will install or upgrade charts."
     echo -e "\t--timeout <TIMEOUT>: Set timeout for helm commands. (default 5m)"
@@ -329,7 +330,14 @@ function start_fingerprint() {
     create_database_secret "mongo" $FINGERPRINT_NS $FINGERPRINT_DB_USERNAME "$FINGERPRINT_DB_PASSWORD" $FINGERPRINT_NS $MONGO_DATABASE_NAME # for deployment for fingerprint namespace
     create_database_secret "mongo" $DEPLOYMENT_NS $FINGERPRINT_DB_USERNAME "$FINGERPRINT_DB_PASSWORD" $FINGERPRINT_NS $MONGO_DATABASE_NAME # for deployment via gmc manifests in chatqna namespace
 
-    HELM_INSTALL_FINGERPRINT_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set image.fingerprint.repository=$REGISTRY/erag/system-fingerprint --set image.fingerprint.tag=$TAG \
+    local HELM_INSTALL_FINGERPRINT_REPO
+    if $use_alternate_tagging; then
+        HELM_INSTALL_FINGERPRINT_REPO="--set image.fingerprint.repository=$REGISTRY/erag --set image.fingerprint.tag=system-fingerprint_$TAG"
+    else
+        HELM_INSTALL_FINGERPRINT_REPO="--set image.fingerprint.repository=$REGISTRY/erag/system-fingerprint --set image.fingerprint.tag=$TAG"
+    fi
+
+    HELM_INSTALL_FINGERPRINT_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT $HELM_INSTALL_FINGERPRINT_REPO \
         --set mongodb.auth.usernames[0]=$FINGERPRINT_DB_USERNAME \
         --set mongodb.auth.passwords[0]=$FINGERPRINT_DB_PASSWORD \
         --set mongodb.auth.databases[0]=$MONGO_DATABASE_NAME \
@@ -407,11 +415,11 @@ function start_deployment() {
     bash set_values.sh -r "$REGISTRY" -t "$TAG"
 
     # create namespaces
-    for ns in $GMC_NS $DEPLOYMENT_NS $DATAPREP_NS; do
+    for ns in $GMC_NS $DEPLOYMENT_NS; do
         kubectl get namespace $ns > /dev/null 2>&1 || kubectl create namespace $ns
         enforce_namespace_policy $ns "restricted"
     done
-    
+
     # Update redis password in chatQnA pipeline's manifest
     VECTOR_DB_USERNAME=default
     get_or_create_and_store_credentials VECTOR_DB $VECTOR_DB_USERNAME ""
@@ -421,7 +429,12 @@ function start_deployment() {
     # Args: database_type, secret_namespace, username, password, namespace_with_database
     create_database_secret "redis" $DEPLOYMENT_NS $VECTOR_DB_USERNAME $VECTOR_DB_PASSWORD $DEPLOYMENT_NS
 
-    helm_install $GMC_NS gmc "$gmc_path"
+    local HELM_INSTALL_DEPLOYMENT_TAGGING
+    if $use_alternate_tagging; then
+        HELM_INSTALL_DEPLOYMENT_TAGGING="--set alternateTagging=true"
+    fi
+
+    helm_install $GMC_NS gmc "$gmc_path" "$HELM_INSTALL_DEPLOYMENT_TAGGING"
 
     # Fingerprint deployment
     local deployment_manifest="$manifests_path/chatQnA_$pipeline.yaml"
@@ -466,7 +479,14 @@ function start_telemetry() {
     echo "HELM_INSTALL_TELEMETRY_EXTRA_ARGS: $HELM_INSTALL_TELEMETRY_EXTRA_ARGS"
 
     ### Logs variables
-    TELEMETRY_LOGS_IMAGE="--wait --timeout $HELM_TIMEOUT --set otelcol-logs.image.repository=$REGISTRY/otelcol-contrib-journalctl --set otelcol-logs.image.tag=$TAG"
+    local HELM_INSTALL_TELEMETRY_REPO
+    if $use_alternate_tagging; then
+        HELM_INSTALL_TELEMETRY_REPO="--set otelcol-logs.image.repository=$REGISTRY/erag --set otelcol-logs.image.tag=otelcol-contrib-journalctl_$TAG"
+    else
+        HELM_INSTALL_TELEMETRY_REPO="--set otelcol-logs.image.repository=$REGISTRY/erag/otelcol-contrib-journalctl --set otelcol-logs.image.tag=$TAG"
+    fi
+
+    TELEMETRY_LOGS_IMAGE="--wait --timeout $HELM_TIMEOUT $HELM_INSTALL_TELEMETRY_REPO"
     TELEMETRY_LOGS_JOURNALCTL="-f $telemetry_logs_path/values-journalctl.yaml"
     HELM_INSTALL_TELEMETRY_LOGS_DEFAULT_ARGS="--wait $TELEMETRY_LOGS_IMAGE  $TELEMETRY_LOGS_JOURNALCTL $LOKI_DNS_FLAG"
     echo "*** Telemetry 'logs' variables:"
@@ -515,8 +535,7 @@ function start_telemetry() {
 
     # IIIb) 'Traces-instr' deploy OpenTelemetry collector and instrumenation for ChatQnA (requires chatqa namespace)
     kubectl get namespace $DEPLOYMENT_NS > /dev/null 2>&1 || kubectl create namespace $DEPLOYMENT_NS
-    kubectl get namespace $DATAPREP_NS > /dev/null 2>&1 || kubectl create namespace $DATAPREP_NS
-    helm_install "$TELEMETRY_TRACES_NS" telemetry-traces-instr "$telemetry_traces_instr_path" "--set instrumentation.namespaces={$DEPLOYMENT_NS,$DATAPREP_NS}"
+    helm_install "$TELEMETRY_TRACES_NS" telemetry-traces-instr "$telemetry_traces_instr_path" "--set instrumentation.namespaces={$DEPLOYMENT_NS}"
     # IIIb) telemetry/traces-instr check
     print_log "waiting until pods in $TELEMETRY_TRACES_NS are ready"
     wait_for_condition check_pods "$TELEMETRY_TRACES_NS"
@@ -525,11 +544,35 @@ function start_telemetry() {
 
 function clear_telemetry() {
     print_header "Clear telemetry"
+    # Timeout duration for deleting otelcol-traces
+    local OTELCOL_DELETE_TIMEOUT=60
 
+    # Delete the tls-secret if it exists
     kubectl get secret tls-secret -n $TELEMETRY_NS > /dev/null 2>&1 && kubectl delete secret tls-secret -n $TELEMETRY_NS
 
-    # remove CR manually to allow (helm uninstall doesn't remove it!)
-    kubectl get otelcols/otelcol-traces -n "$TELEMETRY_TRACES_NS" > /dev/null 2>&1 && kubectl delete otelcols/otelcol-traces -n "$TELEMETRY_TRACES_NS"
+    # Delete otelcol-traces with timeout and webhook handling
+    if kubectl get otelcols/otelcol-traces -n "$TELEMETRY_TRACES_NS" > /dev/null 2>&1; then
+        echo "Attempting to delete otelcol-traces (timeout: ${OTELCOL_DELETE_TIMEOUT} seconds)..."
+
+        # Set a timeout for deletion of otelcol-traces
+        if ! timeout ${OTELCOL_DELETE_TIMEOUT} kubectl delete otelcols/otelcol-traces -n "$TELEMETRY_TRACES_NS"; then
+            echo "Deletion of otelcol-traces is taking too long. Removing webhook and finalizer..."
+
+            # Delete the webhooks if it exists
+            kubectl get mutatingwebhookconfiguration telemetry-traces-otel-operator-mutation > /dev/null 2>&1 && \
+            kubectl delete mutatingwebhookconfiguration telemetry-traces-otel-operator-mutation
+
+            kubectl get validatingwebhookconfiguration telemetry-traces-otel-operator-validation > /dev/null 2>&1 && \
+            kubectl delete validatingwebhookconfiguration telemetry-traces-otel-operator-validation
+
+            # Remove the finalizer blocking deletion
+            kubectl patch otelcols otelcol-traces -n "$TELEMETRY_TRACES_NS" --type='merge' -p '{"metadata":{"finalizers":[]}}'
+
+            # Force delete the resource
+            kubectl delete otelcols/otelcol-traces -n "$TELEMETRY_TRACES_NS" --force --grace-period=0
+        fi
+    fi
+
     helm status -n "$TELEMETRY_TRACES_NS" telemetry-traces-instr > /dev/null 2>&1 && helm uninstall -n "$TELEMETRY_TRACES_NS" telemetry-traces-instr
     helm status -n "$TELEMETRY_TRACES_NS" telemetry-traces > /dev/null 2>&1 && helm uninstall -n "$TELEMETRY_TRACES_NS" telemetry-traces
     helm status -n "$TELEMETRY_NS" telemetry-logs > /dev/null 2>&1 && helm uninstall -n "$TELEMETRY_NS" telemetry-logs
@@ -623,7 +666,6 @@ function clear_ingress() {
 function start_gateway() {
     print_header "Start gateway"
 
-    kubectl get ns $DATAPREP_NS > /dev/null 2>&1 || kubectl create ns $DATAPREP_NS
     kubectl get ns $ENHANCED_DATAPREP_NS > /dev/null 2>&1 || kubectl create ns $ENHANCED_DATAPREP_NS
     kubectl get ns $DEPLOYMENT_NS > /dev/null 2>&1 || kubectl create ns $DEPLOYMENT_NS
     kubectl get ns $FINGERPRINT_NS > /dev/null 2>&1 || kubectl create ns $FINGERPRINT_NS
@@ -673,9 +715,6 @@ function start_edp() {
     local pipeline=$1
     print_header "Start Enhanced Dataprep"
 
-    kubectl get namespace $DATAPREP_NS > /dev/null 2>&1 || kubectl create namespace $DATAPREP_NS
-    enforce_namespace_policy $DATAPREP_NS "restricted"
-
     # Update redis password in chatQnA pipeline's manifest
     VECTOR_DB_USERNAME=default
     get_or_create_and_store_credentials VECTOR_DB $VECTOR_DB_USERNAME ""
@@ -683,17 +722,8 @@ function start_edp() {
 
     # Create or reuse secret for db configuration
     # Args: database_type, secret_namespace, username, password, namespace_with_database
-    create_database_secret "redis" $DATAPREP_NS $VECTOR_DB_USERNAME $VECTOR_DB_PASSWORD $DEPLOYMENT_NS
-    create_database_secret "redis" $TELEMETRY_NS $VECTOR_DB_USERNAME $VECTOR_DB_PASSWORD $DEPLOYMENT_NS  # for redis exporter in telemetry namespace 
-
-    if [[ $pipeline == *"multilingual"* ]]; then
-        kubectl apply -f "$manifests_path/dataprep_xeon_multilingual.yaml"
-    else
-        kubectl apply -f "$manifests_path/dataprep_xeon.yaml"
-    fi
-
-    print_log "waiting until pods in $DATAPREP_NS are ready"
-    wait_for_condition check_pods "$DATAPREP_NS"
+    create_database_secret "redis" $ENHANCED_DATAPREP_NS $VECTOR_DB_USERNAME $VECTOR_DB_PASSWORD $DEPLOYMENT_NS
+    create_database_secret "redis" $TELEMETRY_NS $VECTOR_DB_USERNAME $VECTOR_DB_PASSWORD $DEPLOYMENT_NS  # for redis exporter in telemetry namespace
 
     kubectl get namespace $ENHANCED_DATAPREP_NS > /dev/null 2>&1 || kubectl create namespace $ENHANCED_DATAPREP_NS
     enforce_namespace_policy $ENHANCED_DATAPREP_NS "restricted"
@@ -712,15 +742,61 @@ function start_edp() {
     kill -2 $PID
     kill_process "kubectl port-forward --namespace $AUTH_NS svc/keycloak"
 
-    local minio_access_key=$(tr -dc 'A-Za-z0-9!?%' < /dev/urandom | head -c 10)
-    local minio_secret_key=$(tr -dc 'A-Za-z0-9!?%' < /dev/urandom | head -c 16)
-
     local redis_username="default"
     get_or_create_and_store_credentials EDP_REDIS $redis_username ""
     local redis_password=${NEW_PASSWORD}
 
+    local postgresql_edp_username="edp"
+    get_or_create_and_store_credentials EDP_POSTGRESQL $postgresql_edp_username ""
+    local postgresql_edp_password=${NEW_PASSWORD}
+
+    local postgresql_admin_username="admin"
+    get_or_create_and_store_credentials EDP_POSTGRESQL_ADMIN $postgresql_admin_username ""
+    local postgresql_admin_password=${NEW_PASSWORD}
+
+    local erag_http_proxy=$(awk '/httpProxy:/ {gsub(/"/, "", $2); print $2}' "$gmc_path/values.yaml")
+    local erag_https_proxy=$(awk '/httpsProxy:/ {gsub(/"/, "", $2); print $2}' "$gmc_path/values.yaml")
+    local erag_no_proxy=$(awk '/noProxy:/ {gsub(/"/, "", $2); print $2}' "$gmc_path/values.yaml")
+
+    local embedding_endpoint_helm=""
+    if [[ "$pipeline" == "xeon_torch" ]]; then
+        embedding_endpoint_helm=" --set embedding.enabled=true --set embedding.config.modelServer=torchserve --set embedding.config.modelServerEndpoint=http://torchserve-embedding-svc.chatqa.svc:8090 "
+    elif [[ "$pipeline" == "xeon" ]]; then
+        embedding_endpoint_helm=" --set embedding.enabled=true --set embedding.config.modelServer=tei --set embedding.config.modelServerEndpoint=http://tei-embedding-svc.chatqa.svc:80 "
+    else
+        embedding_endpoint_helm=" --set embedding.enabled=false --set embedding.remoteEmbeddingUri=http://embedding-svc.chatqa.svc:6000/v1/embeddings " # use default embedding from chatqa
+    fi
+
+    HELM_INSTALL_EDP_CONFIGURATION_ARGS="$embedding_endpoint_helm --set postgresAdminPassword=$postgresql_admin_password --set postgresDatabasePassword=$postgresql_edp_password --set proxy.httpProxy=$erag_http_proxy --set proxy.httpsProxy=$erag_https_proxy --set proxy.noProxy=$(echo "$erag_no_proxy" | sed 's/,/\\,/g') "
+
+    if $dpguard; then
+        print_log "Enabling Dataprep Guardrail"
+        HELM_INSTALL_EDP_CONFIGURATION_ARGS="$HELM_INSTALL_EDP_CONFIGURATION_ARGS --set dpguard.enabled=true "
+    fi
+
     helm dependency update "$edp_path" > /dev/null
-    helm_install $ENHANCED_DATAPREP_NS edp "$edp_path" "$HELM_INSTALL_EDP_DEFAULT_ARGS --set minioAccessKey=$minio_access_key --set minioSecretKey=$minio_secret_key --set redisUsername=$redis_username --set redisPassword=$redis_password --set minioOidcClientSecret=$minio_client_secret"
+
+    STORAGE_TYPE="${edp_storage_type:-""}"
+    case $STORAGE_TYPE in
+        s3)
+            print_log "Using AWS S3 storage"
+            region=${s3_region:-"us-west-2"}
+            HELM_INSTALL_EDP_CONFIGURATION_ARGS="$HELM_INSTALL_EDP_CONFIGURATION_ARGS --set awsSqs.enabled=true --set edpExternalUrl=https://s3.amazonaws.com --set edpInternalUrl=https://s3.amazonaws.com --set edpBaseRegion=$region --set edpAccessKey=$s3_access_key --set edpSecretKey=$s3_secret_key --set edpSqsEventQueueUrl=$s3_sqs_queue --set bucketNameRegexFilter=$s3_bucket_name_regex_filter "
+            ;;
+        s3compatible)
+            print_log "Using S3 API compatible storage"
+            region=${s3_region:-"us-west-2"}
+            HELM_INSTALL_EDP_CONFIGURATION_ARGS="$HELM_INSTALL_EDP_CONFIGURATION_ARGS --set awsSqs.enabled=false --set edpExternalUrl=$s3_compatible_endpoint --set edpInternalUrl=$s3_compatible_endpoint --set edpBaseRegion=$region --set edpAccessKey=$s3_access_key --set edpSecretKey=$s3_secret_key --set bucketNameRegexFilter=$s3_bucket_name_regex_filter "
+            ;;
+        minio | "")
+            print_log "Using Minio storage"
+            local minio_access_key=$(tr -dc 'A-Za-z0-9!?%' < /dev/urandom | head -c 10)
+            local minio_secret_key=$(tr -dc 'A-Za-z0-9!?%' < /dev/urandom | head -c 16)
+            HELM_INSTALL_EDP_CONFIGURATION_ARGS="$HELM_INSTALL_EDP_CONFIGURATION_ARGS --set awsSqs.enabled=false --set edpExternalUrl=https://s3.erag.com --set edpInternalUrl=http://edp-minio:9000 --set edpInternalSecure=false --set edpAccessKey=$minio_access_key --set edpSecretKey=$minio_secret_key --set edpOidcClientSecret=$minio_client_secret "
+            ;;
+    esac
+
+    helm_install $ENHANCED_DATAPREP_NS edp "$edp_path" "$HELM_INSTALL_EDP_DEFAULT_ARGS $HELM_INSTALL_EDP_CONFIGURATION_ARGS --set redisUsername=$redis_username --set redisPassword=$redis_password "
 
     print_log "waiting until pods in $ENHANCED_DATAPREP_NS are ready"
     wait_for_condition check_pods "$ENHANCED_DATAPREP_NS"
@@ -733,7 +809,6 @@ function clear_edp() {
 
     helm status -n $ENHANCED_DATAPREP_NS edp > /dev/null 2>&1 && helm uninstall -n $ENHANCED_DATAPREP_NS edp
     kubectl get ns $ENHANCED_DATAPREP_NS > /dev/null 2>&1 && kubectl delete ns $ENHANCED_DATAPREP_NS
-    kubectl get ns $DATAPREP_NS > /dev/null 2>&1 && kubectl delete ns $DATAPREP_NS
 }
 
 function clear_ui() {
@@ -749,7 +824,6 @@ function clear_all_ns() {
     print_header "removing all EnterpriseRAG namespaces"
 
     kubectl get ns $DEPLOYMENT_NS > /dev/null 2>&1 && kubectl delete ns $DEPLOYMENT_NS
-    kubectl get ns $DATAPREP_NS > /dev/null 2>&1 && kubectl delete ns $DATAPREP_NS
     kubectl get ns $ENHANCED_DATAPREP_NS > /dev/null 2>&1 && kubectl delete ns $ENHANCED_DATAPREP_NS
     kubectl get ns $TELEMETRY_NS > /dev/null 2>&1 && kubectl delete ns $TELEMETRY_NS
     kubectl get ns $TELEMETRY_TRACES_NS > /dev/null 2>&1 && kubectl delete ns $TELEMETRY_TRACES_NS
@@ -776,6 +850,7 @@ mesh_installed=false
 auth_flag=false
 helm_upgrade=false
 edp_flag=true
+dpguard=false
 strict_policy_flag=false
 clear_any_flag=false
 clear_deployment_flag=false
@@ -786,6 +861,7 @@ clear_mesh_flag=false
 clear_all_flag=false
 clear_auth_flag=false
 clear_edp_flag=false
+use_alternate_tagging=false
 
 
 # Parse arguments
@@ -833,6 +909,9 @@ while [[ "$#" -gt 0 ]]; do
             fi
             TAG=$1
             ;;
+        --use-alternate-tagging)
+            use_alternate_tagging=true
+            ;;
         --test)
             test_flag=true
             ;;
@@ -858,6 +937,9 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --no-edp)
             edp_flag=false
+            ;;
+        --dpguard)
+            dpguard=true
             ;;
         --no-mesh)
             mesh_flag=false
@@ -984,13 +1066,29 @@ if [[ "$FEATURES" == *"tdx"* ]]; then
     fi
 fi
 
-HELM_INSTALL_UI_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set image.ui.repository=$REGISTRY/erag/chatqna-conversation-ui --set image.ui.tag=$TAG "
+if $use_alternate_tagging; then
+    HELM_INSTALL_UI_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set image.ui.repository=$REGISTRY/erag --set image.ui.tag=chatqna-conversation-ui_$TAG "
+    HELM_INSTALL_EDP_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set celery.repository=$REGISTRY/erag --set celery.tag=enhanced-dataprep_$TAG --set flower.repository=$REGISTRY/erag --set flower.tag=enhanced-dataprep_$TAG --set backend.repository=$REGISTRY/erag --set backend.tag=enhanced-dataprep_$TAG --set dataprep.repository=$REGISTRY/erag --set dataprep.tag=dataprep_$TAG  --set embedding.repository=$REGISTRY/erag --set embedding.tag=embedding_$TAG --set ingestion.repository=$REGISTRY/erag --set ingestion.tag=ingestion_$TAG --set awsSqs.repository=$REGISTRY/erag --set awsSqs.tag=enhanced-dataprep_$TAG --set dpguard.repository=$REGISTRY/erag --set dpguard.tag=dpguard_$TAG"
+else
+    HELM_INSTALL_UI_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set image.ui.repository=$REGISTRY/erag/chatqna-conversation-ui --set image.ui.tag=$TAG "
+    HELM_INSTALL_EDP_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set celery.repository=$REGISTRY/erag/enhanced-dataprep --set celery.tag=$TAG --set flower.repository=$REGISTRY/erag/enhanced-dataprep --set flower.tag=$TAG --set backend.repository=$REGISTRY/erag/enhanced-dataprep --set backend.tag=$TAG --set dataprep.repository=$REGISTRY/erag/dataprep --set dataprep.tag=$TAG  --set embedding.repository=$REGISTRY/erag/embedding --set embedding.tag=$TAG --set ingestion.repository=$REGISTRY/erag/ingestion --set ingestion.tag=$TAG "
+fi
+
 HELM_INSTALL_INGRESS_DEFAULT_ARGS="--timeout $HELM_TIMEOUT --version $INGRESS_CHARTS_VERSION -f $ingress_path/ingress-values.yaml"
 HELM_INSTALL_GATEWAY_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT"
 HELM_INSTALL_GATEWAY_CRD_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT"
-HELM_INSTALL_EDP_DEFAULT_ARGS="--wait --timeout $HELM_TIMEOUT --set celery.repository=$REGISTRY/erag/enhanced-dataprep --set celery.tag=$TAG --set flower.repository=$REGISTRY/erag/enhanced-dataprep --set flower.tag=$TAG --set backend.repository=$REGISTRY/erag/enhanced-dataprep --set backend.tag=$TAG"
 
 # Execute given arguments
+
+# allow istio to inject during the upgrade process
+if [[ "$helm_upgrade" == "true" && ( "$mesh_installed" == "true" || "$mesh_flag" == "true" ) ]]; then
+    istio_protected_ns_list=$(kubectl get namespaces -l erag-istio-protected=true -o jsonpath='{.items[*].metadata.name}')
+
+    for ns in $istio_protected_ns_list; do
+        kubectl label namespace $ns erag-istio-protected=false --overwrite
+        kubectl label namespace $ns istio.io/dataplane-mode- --overwrite
+    done
+fi
 
 if $create_flag; then
     create_certs
@@ -1013,7 +1111,7 @@ fi
 
 if $deploy_flag; then
     start_deployment "$PIPELINE"
-    updated_ns_list+=($GMC_NS $DEPLOYMENT_NS $DATAPREP_NS $FINGERPRINT_NS)
+    updated_ns_list+=($GMC_NS $DEPLOYMENT_NS $FINGERPRINT_NS)
 fi
 
 if $ui_flag; then
@@ -1053,6 +1151,9 @@ if $mesh_flag && $create_flag; then
         if [ -f $authz_file ]; then
             authz_policies="${authz_policies}${authz_policies:+ }${authz_file}"
         fi
+
+        kubectl label namespace $ns erag-istio-protected=true --overwrite
+        kubectl label namespace $ns istio.io/dataplane-mode=ambient --overwrite
     done
     kubectl apply $(printf " -f %s" $authz_policies)
 fi
@@ -1074,6 +1175,7 @@ fi
 
 if $clear_deployment_flag; then
     clear_deployment
+    clear_fingerprint
 fi
 
 if $clear_ui_flag; then

@@ -14,9 +14,6 @@ data:
   http_proxy: {{ .Values.proxy.httpProxy | quote }}
   https_proxy: {{ .Values.proxy.httpsProxy | quote }}
   no_proxy: {{ .Values.proxy.noProxy | quote }}
-  EMBEDDING_CONNECTOR: "langchain"
-  EMBEDDING_MODEL_NAME: "BAAI/bge-base-en-v1.5"
-  EMBEDDING_MODEL_SERVER: "torchserve"
 ---
 # Source: embedding-usvc/templates/service.yaml
 # Copyright (C) 2024-2025 Intel Corporation
@@ -103,7 +100,7 @@ spec:
                 optional: true
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: {{ toYaml (index .Values "images" .filename "repository") }}/{{ toYaml (index .Values "images" .filename "path") }}/{{ toYaml (index .Values "images" .filename "image") }}:{{ toYaml (index .Values "images" .filename "tag") }}
+          image: {{ include "manifest.image" (list .filename .Values) }}
           imagePullPolicy: {{ toYaml (index .Values "images" .filename "pullPolicy" | default "Always") }}
           ports:
             - name: embedding-usvc

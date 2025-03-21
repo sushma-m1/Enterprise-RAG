@@ -61,6 +61,12 @@ endpoints:
       - /api/file/$1/retry
       - ^/api/v1/edp/file/([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})/task$
       - /api/file/$1/task
+      - ^/api/v1/edp/list_buckets$
+      - /api/list_buckets
+      - ^/api/v1/edp/file/([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})/extract$
+      - /api/file/$1/extract
+      - ^/api/v1/edp/retrieve$
+      - /api/retrieve
       - ^/api/v1/edp/presignedUrl$
       - /api/presignedUrl
     permissions:
@@ -75,16 +81,6 @@ endpoints_api:
     service_port: 443
     scheme: https
     service_path: /apis/gmc.opea.io/v1alpha3/namespaces/chatqa/gmconnectors/chatqa/status
-    permissions:
-      - "admin#admin-access"
-  - name: k8s-api-watcher-dataprep
-    namespace: default
-    path: /api/v1/dataprep/status
-    backend_service: kubernetes
-    rate_limit_count: 30
-    service_port: 443
-    scheme: https
-    service_path: /apis/gmc.opea.io/v1alpha3/namespaces/dataprep/gmconnectors/dataprep/status
     permissions:
       - "admin#admin-access"
 
