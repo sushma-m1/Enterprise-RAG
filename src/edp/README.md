@@ -41,6 +41,20 @@ cd deployment
 ```
 
 #### S3 API compatible storage
+If the S3 compatible endpoint does not support bucket notifications, files uploaded to the storage will not appear in EDP database and will not be visible in the UI. Data will also not be processed and available in the vector database of choice. To overcome this, a pulling synchronization option is available. To use it, edit the `deployment/components/edp/values.yaml` file and set the `celery.config.scheduledSync.enabled` to `true`. Optionally configure the pulling frequency by setting the `celery.config.scheduledSync.syncPeriodSeconds` - set the number of seconds between each pull request from storage. Note that for storages with high amount of files and/or frequently changed files requires more delay between each subsequent pulls. For small amount of files this option can be set to a lower value, such as "60" seconds. Sample configuration that enables scheduled synchronization:
+
+```yaml
+celery:
+  config:
+    scheduledSync:
+      enabled: true
+      syncPeriodSeconds: "60"
+```
+
+You can also manually schedule the synchronization task. To run the synchronization task perform a request to either:
+- `POST /api/files/sync/` to backend container form within the cluster.
+- `POST /api/v1/edp/files/sync` to WebUI - this requires passing `Authorization` token.
+
 To use external storage server that is compatible with S3 API, follow similar steps as in the above AWS S3 storage with substitution to your endpoint settings.
 
 For example:
@@ -62,52 +76,58 @@ cd deployment
 
 If you want to utilize all functionality, depeding on the application server you have to provide these environment variables:
 
-| Service | Environment Variable     | Description |
-|---------|--------------------------|--------------------------|
-| Celery  | EDP_EXTERNAL_URL         | Base URL for External S3 endpoint |
-|         | EDP_INTERNAL_URL         | Base URL for Internal S3 endpoint |
-|         | EDP_EXTERNAL_SECURE      | Should EDP use secure connection to external S3 endpoint |
-|         | EDP_INTERNAL_SECURE      | Should EDP use secure connection to internal S3 endpoint |
-|         | EDP_BASE_REGION          | Base region for EDP S3 buckets |
-|         | MINIO_ACCESS_KEY         | Access key either to MinIO or S3 IAM user |
-|         | MINIO_SECRET_KEY         | Secret key either to MinIO or S3 IAM user |
-|         | CELERY_BROKER_URL        | URL for Celery broker |
-|         | CELERY_BACKEND_URL       | URL for Celery backend |
-|         | DATAPREP_ENDPOINT        | Endpoint for data preparation service |
-|         | EMBEDDING_ENDPOINT       | Endpoint for embedding service |
-|         | INGESTION_ENDPOINT       | Endpoint for ingestion service |
-|         | DATABASE_HOST            | Host for PostgreSQL database |
-|         | DATABASE_PORT            | Port for PostgreSQL database |
-|         | DATABASE_NAME            | Name of PostgreSQL database |
-|         | DATABASE_USER            | User for PostgreSQL database |
-|         | DATABASE_PASSWORD        | Password for PostgreSQL database |
-| Flower  | CELERY_BROKER_URL        | URL for Celery broker |
-|         | CELERY_BACKEND_URL       | URL for Celery backend |
-|         | DATABASE_HOST            | Host for PostgreSQL database |
-|         | DATABASE_PORT            | Port for PostgreSQL database |
-|         | DATABASE_NAME            | Name of PostgreSQL database |
-|         | DATABASE_USER            | User for PostgreSQL database |
-|         | DATABASE_PASSWORD        | Password for PostgreSQL database |
-| Backend | CELERY_BROKER_URL        | URL for Celery broker |
-|         | CELERY_BACKEND_URL       | URL for Celery backend |
-|         | DATABASE_HOST            | Host for PostgreSQL database |
-|         | DATABASE_PORT            | Port for PostgreSQL database |
-|         | DATABASE_NAME            | Name of PostgreSQL database |
-|         | DATABASE_USER            | User for PostgreSQL database |
-|         | DATABASE_PASSWORD        | Password for PostgreSQL database |
-|         | EDP_EXTERNAL_URL         | Base URL for External S3 endpoint |
-|         | EDP_INTERNAL_URL         | Base URL for Internal S3 endpoint |
-|         | EDP_EXTERNAL_SECURE      | Should EDP use secure connection to external S3 endpoint |
-|         | EDP_INTERNAL_SECURE      | Should EDP use secure connection to internal S3 endpoint |
-|         | EDP_BASE_REGION          | Base region for EDP S3 buckets |
-|         | MINIO_ACCESS_KEY         | Access key either to MinIO or S3 IAM user |
-|         | MINIO_SECRET_KEY         | Secret key either to MinIO or S3 IAM user |
-|         | BUCKET_NAME_REGEX_FILTER | Regex filter for filtering out available buckets by name |
-| Sqs     | AWS_SQS_EVENT_QUEUE_URL  | AWS SQS Queue url to listen for S3 events |
-|         | EDP_BACKEND_ENDPOINT     | Endpoint to backend service |
-|         | AWS_DEFAULT_REGION       | Base region for EDP S3 buckets |
-|         | AWS_ACCESS_KEY_ID        | Access key to S3 IAM user |
-|         | AWS_SECRET_ACCESS_KEY    | Secret key to S3 IAM user |
+| Service | Environment Variable       | Description |
+|---------|----------------------------|--------------------------|
+| Celery  | EDP_EXTERNAL_URL           | Base URL for External S3 endpoint |
+|         | EDP_INTERNAL_URL           | Base URL for Internal S3 endpoint |
+|         | EDP_EXTERNAL_SECURE        | Should EDP use secure connection to external S3 endpoint |
+|         | EDP_EXTERNAL_CERT_VERIFY   | Should EDP verify the external S3 endpoint certificate validity |
+|         | EDP_INTERNAL_SECURE        | Should EDP use secure connection to internal S3 endpoint |
+|         | EDP_INTERNAL_CERT_VERIFY   | Should EDP verify the internal S3 endpoint certificate validity |
+|         | EDP_BASE_REGION            | Base region for EDP S3 buckets |
+|         | EDP_SYNC_TASK_TIME_SECONDS | If defined and not empty, will enable Celery's periodic task to pull changes from storage |
+|         | MINIO_ACCESS_KEY           | Access key either to MinIO or S3 IAM user |
+|         | MINIO_SECRET_KEY           | Secret key either to MinIO or S3 IAM user |
+|         | BUCKET_NAME_REGEX_FILTER   | Regex filter for filtering out available buckets by name |
+|         | CELERY_BROKER_URL          | URL for Celery broker |
+|         | CELERY_BACKEND_URL         | URL for Celery backend |
+|         | DATAPREP_ENDPOINT          | Endpoint for data preparation service |
+|         | EMBEDDING_ENDPOINT         | Endpoint for embedding service |
+|         | INGESTION_ENDPOINT         | Endpoint for ingestion service |
+|         | DATABASE_HOST              | Host for PostgreSQL database |
+|         | DATABASE_PORT              | Port for PostgreSQL database |
+|         | DATABASE_NAME              | Name of PostgreSQL database |
+|         | DATABASE_USER              | User for PostgreSQL database |
+|         | DATABASE_PASSWORD          | Password for PostgreSQL database |
+| Flower  | CELERY_BROKER_URL          | URL for Celery broker |
+|         | CELERY_BACKEND_URL         | URL for Celery backend |
+|         | DATABASE_HOST              | Host for PostgreSQL database |
+|         | DATABASE_PORT              | Port for PostgreSQL database |
+|         | DATABASE_NAME              | Name of PostgreSQL database |
+|         | DATABASE_USER              | User for PostgreSQL database |
+|         | DATABASE_PASSWORD          | Password for PostgreSQL database |
+| Backend | CELERY_BROKER_URL          | URL for Celery broker |
+|         | CELERY_BACKEND_URL         | URL for Celery backend |
+|         | DATABASE_HOST              | Host for PostgreSQL database |
+|         | DATABASE_PORT              | Port for PostgreSQL database |
+|         | DATABASE_NAME              | Name of PostgreSQL database |
+|         | DATABASE_USER              | User for PostgreSQL database |
+|         | DATABASE_PASSWORD          | Password for PostgreSQL database |
+|         | EDP_EXTERNAL_URL           | Base URL for External S3 endpoint |
+|         | EDP_INTERNAL_URL           | Base URL for Internal S3 endpoint |
+|         | EDP_EXTERNAL_SECURE        | Should EDP use secure connection to external S3 endpoint |
+|         | EDP_EXTERNAL_CERT_VERIFY   | Should EDP verify the external S3 endpoint certificate validity |
+|         | EDP_INTERNAL_SECURE        | Should EDP use secure connection to internal S3 endpoint |
+|         | EDP_INTERNAL_CERT_VERIFY   | Should EDP verify the internal S3 endpoint certificate validity |
+|         | EDP_BASE_REGION            | Base region for EDP S3 buckets |
+|         | MINIO_ACCESS_KEY           | Access key either to MinIO or S3 IAM user |
+|         | MINIO_SECRET_KEY           | Secret key either to MinIO or S3 IAM user |
+|         | BUCKET_NAME_REGEX_FILTER   | Regex filter for filtering out available buckets by name |
+| Sqs     | AWS_SQS_EVENT_QUEUE_URL    | AWS SQS Queue url to listen for S3 events |
+|         | EDP_BACKEND_ENDPOINT       | Endpoint to backend service |
+|         | AWS_DEFAULT_REGION         | Base region for EDP S3 buckets |
+|         | AWS_ACCESS_KEY_ID          | Access key to S3 IAM user |
+|         | AWS_SECRET_ACCESS_KEY      | Secret key to S3 IAM user |
 
 ### Install dependencies
 
@@ -172,6 +192,20 @@ To get access to the `Swagger Web UI` API documentation, please run:
 kubectl port-forward --namespace edp svc/edp-backend 1234:5000
 ```
 And proceed to the following url `http://localhost:1234/docs`
+
+## Troubleshooting
+
+### My selected S3 or S3-Compatible storage does not support bucket notifications
+If you are unable to use bucket notifications through the `minio-event` URL or use `aws-sqs`, you will not receive notifications of file changes from your storage. To mitigate this, you have the option of manual or scheduled sync. Manual sync can be performed by sending a `POST /api/v1/edp/files/sync` request, which queries the storage buckets and compares them to the data in the EDP database. You can also perform a differential query without synchronization tasks by sending a `GET /api/v1/edp/files/sync` request. This will return a JSON array containing status of all files - either to be added, deleted, updated or skipped. Additionally, you can configure a scheduled sync job to perform the sync task at regular intervals. To set this up, configure the `celery.config.scheduledSync` options in the Helm chart (deployment/components/edp/values.yaml) by enabling it and configuring the synchronization period.
+
+### File upload certificate error
+If you deployed ERAG with self-signed certificates, you might also need to accept the external storage certificate. Web browsers require acceptance of certificates for each domain they encounter, even if these are self-signed wildcard certificates. Therefore, you must accept certificates for both your Web GUI and the S3 endpoint. For instance, if your GUI is running under myrag.example.com and the storage is configured at s3.myrag.example.com, you need to visit both domains directly and accept their self-signed certificates. Alternatively, you can upload the self-signed certificates to your browser's certificate store.
+
+### Protocol missmatch
+If you encounter a protocol mismatch error, it may be because edpExternalSecure is set to false while using ERAG with an SSL connection. This occurs when ERAG expects HTTPS but the configuration allows HTTP. The edpExternalSecure setting is used by presigned URLs that are exposed to the end user only. To resolve this issue, ensure that edpExternalSecure matches your ERAG connection. Set it to true for HTTPS or false for HTTP. For example, if your ERAG is at https://myrag.example.com and you set edpExternalSecure to false while configuring the storage endpoint to storage.myrag.example.com, this will generate a presigned URL with an HTTP schema, resulting in a protocol mismatch error.
+
+### CORS related issues
+Your chosen S3 storage endpoint can be configured with special settings known as CORS (Cross-Origin Resource Sharing). When you upload a file using the EDP web GUI, your browser requests a presigned URL from the backend. This URL enables you to upload files to S3-compatible storage without needing to provide credentials. However, this URL will not match the current URL of the EDP GUI you are using. For instance, if your GUI is running under myrag.example.com and the storage is configured at storage.mycorp.internal, you will encounter a CORS error. This occurs because your browser and the storage endpoint do not permit requests from unapproved origins. To resolve this issue, ensure that the storage is properly configured to allow your origin. In the example above, the CORS configuration on your chosen storage should permit requests from myrag.example.com. For more details on CORS, please refer to the manufacturer's documentation.
 
 ## Testing
 
