@@ -27,10 +27,6 @@ class TextDoc(BaseDoc, TopologyInfo):
     metadata: Optional[dict] = {}
     conversation_history: Optional[List[PrevQuestionDetails]] = None
 
-class TextDocList(BaseDoc):
-    docs: List[TextDoc]
-    conversation_history: Optional[List[PrevQuestionDetails]] = None
-
 class Base64ByteStrDoc(BaseDoc):
     byte_str: str
 
@@ -38,8 +34,6 @@ class DocPath(BaseDoc):
     path: str
     chunk_size: int = 1500
     chunk_overlap: int = 100
-    process_table: bool = False
-    table_strategy: str = "fast"
 
 class EmbedDoc(BaseDoc):
     text: str
@@ -79,15 +73,33 @@ class DataPrepFile(BaseDoc):
 class DataPrepInput(BaseDoc):
     files: List[DataPrepFile] = []
     links: List[str] = []
-    chunk_size: Optional[Any] = None
-    chunk_overlap: Optional[Any] = None
-    process_table: Optional[Any] = None
-    table_strategy: Optional[Any] = None
+
+class HierarchicalDataPrepInput(BaseDoc):
+    files: List[DataPrepFile] = []
+    links: List[str] = []
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
     max_new_tokens: Optional[PositiveInt] = None
+
+class TextCompressionTechnique(BaseDoc):
+    name: str
+    parameters: Optional[Dict[str, Any]] = None
+
+class TextCompressionInput(BaseDoc):
+    loaded_docs: List[TextDoc]
+    compression_techniques: Optional[List[TextCompressionTechnique]] = None
+
+class TextSplitterInput(BaseDoc):
+    loaded_docs: List[TextDoc]
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+    use_semantic_chunking: Optional[bool] = None
+    semantic_chunk_params: Optional[Dict[str, Any]] = None
 
 class SearchedDoc(BaseDoc):
     retrieved_docs: DocList[TextDoc]
     user_prompt: str
+    sibling_docs: Optional[Dict[str, DocList[TextDoc]]] = None
     top_n: PositiveInt = 3
     rerank_score_threshold: Optional[float] = 0.02
     conversation_history: Optional[List[PrevQuestionDetails]] = None
@@ -115,24 +127,10 @@ class AnonymizeModel(BaseDoc):
     threshold: Optional[float] = None
     language: Optional[str] = None
 
-class BanCodeModel(BaseDoc):
-    enabled: bool = False
-    use_onnx: bool = False
-    model: Optional[str] = None
-    threshold: Optional[float] = None
-
-class BanCompetitorsModel(BaseDoc):
-    enabled: bool = False
-    use_onnx: bool = False
-    competitors: List[str] = ["Competitor1", "Competitor2", "Competitor3"]
-    model: Optional[str] = None
-    threshold: Optional[float] = None
-    redact: Optional[bool] = None
-
 class BanSubstringsModel(BaseDoc):
     enabled: bool = False
     substrings: List[str] = ["backdoor", "malware", "virus"]
-    match_type: Optional[str] = None
+    match_type: Optional[str] = "str"
     case_sensitive: bool = False
     redact: Optional[bool] = None
     contains_all: Optional[bool] = None
@@ -141,7 +139,7 @@ class BanTopicsModel(BaseDoc):
     enabled: bool = False
     use_onnx: bool = False
     topics: List[str] = ["violence","attack","war"]
-    threshold: Optional[float] = None
+    threshold: Optional[float] = 0.6
     model: Optional[str] = None
 
 class CodeModel(BaseDoc):
@@ -150,61 +148,46 @@ class CodeModel(BaseDoc):
     languages: List[str] = ["Java", "Python"]
     model: Optional[str] = None
     is_blocked: Optional[bool] = None
-    threshold: Optional[float] = None
-
-class GibberishModel(BaseDoc):
-    enabled: bool = False
-    use_onnx: bool = False
-    model: Optional[str] = None
-    threshold: Optional[float] = None
-    match_type: Optional[str] = None
+    threshold: Optional[float] = 0.5
 
 class InvisibleText(BaseDoc):
     enabled: bool = False
-
-class LanguageModel(BaseDoc):
-    enabled: bool = False
-    use_onnx: bool = False
-    valid_languages: List[str] = ["en", "es"]
-    model: Optional[str] = None
-    threshold: Optional[float] = None
-    match_type: Optional[str] = None
 
 class PromptInjectionModel(BaseDoc):
     enabled: bool = False
     use_onnx: bool = False
     model: Optional[str] = None
-    threshold: Optional[float] = None
-    match_type: Optional[str] = None
+    threshold: Optional[float] = 0.92
+    match_type: Optional[str] = "full"
 
 class RegexModel(BaseDoc):
     enabled: bool = False
     patterns: List[str] = ["Bearer [A-Za-z0-9-._~+/]+"]
     is_blocked: Optional[bool] = None
-    match_type: Optional[str] = None
+    match_type: Optional[str] = "all"
     redact: Optional[bool] = None
 
 class SecretsModel(BaseDoc):
     enabled: bool = False
-    redact_mode: Optional[str] = None
+    redact_mode: Optional[str] = "all"
 
 class SentimentModel(BaseDoc):
     enabled: bool = False
-    threshold: Optional[float] = None
+    threshold: Optional[float] = -0.3
     lexicon: Optional[str] = None
 
 class TokenLimitModel(BaseDoc):
     enabled: bool = False
-    limit: Optional[int] = None
-    encoding_name: Optional[str] = None
+    limit: Optional[int] = 4096
+    encoding_name: Optional[str] = "cl100k_base"
     model_name: Optional[str] = None
 
 class ToxicityModel(BaseDoc):
     enabled: bool = False
     use_onnx: bool = False
     model: Optional[str] = None
-    threshold: Optional[float] = None
-    match_type: Optional[str] = None
+    threshold: Optional[float] = 0.5
+    match_type: Optional[str] = "full"
 
 class BiasModel(BaseDoc):
     enabled: bool = False
@@ -221,12 +204,6 @@ class JSONModel(BaseDoc):
     enabled: bool = False
     required_elements: Optional[int] = None
     repair: Optional[bool] = None
-
-class LanguageSameModel(BaseDoc):
-    enabled: bool = False
-    use_onnx: bool = False
-    model: Optional[str] = None
-    threshold: Optional[float] = None
 
 class MaliciousURLsModel(BaseDoc):
     enabled: bool = False
@@ -277,14 +254,10 @@ class URLReachabilityModel(BaseDoc):
 
 class LLMGuardInputGuardrailParams(BaseDoc):
     anonymize: AnonymizeModel = AnonymizeModel()
-    ban_code: BanCodeModel = BanCodeModel()
-    ban_competitors: BanCompetitorsModel = BanCompetitorsModel()
     ban_substrings: BanSubstringsModel = BanSubstringsModel()
     ban_topics: BanTopicsModel = BanTopicsModel()
     code: CodeModel = CodeModel()
-    gibberish: GibberishModel = GibberishModel()
     invisible_text: InvisibleText = InvisibleText()
-    language: LanguageModel = LanguageModel()
     prompt_injection: PromptInjectionModel = PromptInjectionModel()
     regex: RegexModel = RegexModel()
     secrets: SecretsModel = SecretsModel()
@@ -293,22 +266,17 @@ class LLMGuardInputGuardrailParams(BaseDoc):
     toxicity: ToxicityModel = ToxicityModel()
 
 class LLMGuardOutputGuardrailParams(BaseDoc):
-    ban_code: BanCodeModel = BanCodeModel()
-    ban_competitors: BanCompetitorsModel = BanCompetitorsModel()
     ban_substrings: BanSubstringsModel = BanSubstringsModel()
     ban_topics: BanTopicsModel = BanTopicsModel()
     bias: BiasModel = BiasModel()
     code: CodeModel = CodeModel()
     deanonymize: DeanonymizeModel = DeanonymizeModel()
     json_scanner: JSONModel = JSONModel()
-    language: LanguageModel = LanguageModel()
-    language_same: LanguageSameModel = LanguageSameModel()
     malicious_urls: MaliciousURLsModel = MaliciousURLsModel()
     no_refusal: NoRefusalModel = NoRefusalModel()
     no_refusal_light: NoRefusalLightModel = NoRefusalLightModel()
     reading_time: ReadingTimeModel = ReadingTimeModel()
     factual_consistency: FactualConsistencyModel = FactualConsistencyModel()
-    gibberish: GibberishModel = GibberishModel()
     regex: RegexModel = RegexModel()
     relevance: RelevanceModel = RelevanceModel()
     sensitive: SensitiveModel = SensitiveModel()
@@ -316,6 +284,23 @@ class LLMGuardOutputGuardrailParams(BaseDoc):
     toxicity: ToxicityModel = ToxicityModel()
     url_reachability: URLReachabilityModel = URLReachabilityModel()
     anonymize_vault: Optional[List[Tuple]] = None # the only parameter not available in fingerprint. Used to tramsmit vault
+
+class LLMGuardDataprepGuardrailParams(BaseDoc):
+    ban_substrings: BanSubstringsModel = BanSubstringsModel()
+    ban_topics: BanTopicsModel = BanTopicsModel()
+    code: CodeModel = CodeModel()
+    invisible_text: InvisibleText = InvisibleText()
+    prompt_injection: PromptInjectionModel = PromptInjectionModel()
+    regex: RegexModel = RegexModel()
+    secrets: SecretsModel = SecretsModel()
+    sentiment: SentimentModel = SentimentModel()
+    token_limit: TokenLimitModel = TokenLimitModel()
+    toxicity: ToxicityModel = ToxicityModel()
+
+class TextDocList(BaseDoc):
+    docs: List[TextDoc]
+    conversation_history: Optional[List[PrevQuestionDetails]] = None
+    dataprep_guardrail_params: Optional[LLMGuardDataprepGuardrailParams] = None
 
 class LLMPromptTemplate(BaseDoc):
     system: str

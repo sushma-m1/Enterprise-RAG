@@ -2,15 +2,11 @@
 
 The OPEA ERAG Enhanced Data Preparation service provides advanced document processing capabilities for the Enterprise RAG system, ensuring automated data flow from storage to retriever-ready format. The service supports multiple storage backends for managing and processing documents: `MinIO`, `AWS S3`, and `S3-compatible` endpoints.
 
-Below you find how to configure the chosen storage backend for both Ansible-based deployment and install_chatqna.sh-based deployment (legacy).
-
->⚠️ The `install_chatqna.sh` script is deprecated and will be removed in version 1.3.0.
-
 ## Requirements
 
 - Python >=3.12 is required to run EDP.
 - A stand alone `redis` server for task management is required.
-- A stand alone `redis search` server for VectorDB data is required.
+- A stand alone `redis search` server or Redis >= 8.0 for VectorDB data is required.
 - A stand alone `postgresql` server for storing file and link entries is required.
 - A S3 compatible storage (one of the following)
     - A stand alone `MinIO` server for storing files. This is included and optional.
@@ -24,7 +20,7 @@ Below you find how to configure the chosen storage backend for both Ansible-base
     - (optional) sqs - queue listener for S3 events if using AWS S3
 
 
-## Configuration in Ansible-based Deployment
+## Configuration
 
 ### Storage endpoints
 Use the config.yaml file to define the storage backend. Set the desired `storageType` under the edp section in your config.yaml, see [inventory/sample/config.yaml](../../deployment/inventory/sample/config.yaml). Then, configure the appropriate sub-section based on the selected type.
@@ -90,61 +86,6 @@ After successful deployment, upload files using either WebGUI or cURL:
 curl -X PUT "https://localhost:9191/default/test.txt" --upload-file test.txt -H "Content-Type: application/octet-stream" -k
 ```
 
-## Configuration in Bash-based deployment (Legacy)
-
-For [bash-based install_chatqna.sh deployment](../../deployment/README_bash.md), the storage backends are configured only via environment variables.
-
-> Note: `install_chatqna.sh` is deprecated and will be removed in version 1.3.0.
-> Please migrate to the Ansible-based deployment.
-
-### Storage endpoints
-
-#### Internal MinIO Storage (default)
-If using minio storage, MinIO server will be automatically deployed and configured. MinIO is used if not overridden by `edp_storage_type` env variable while running `install_chatqna.sh`.
-
-#### AWS S3 Storage
-To connect to AWS S3, set the `edp_storage_type` environment variable to "s3" and provide the necessary configuration using the appropriate environment variables listed below. For example scripts that create the required AWS resources—such as S3 buckets and SQS queues—refer to the [terraform/README.md](terraform/README.md).
-
-```bash
-export edp_storage_type="s3"            # This will choose S3 as storage type for EDP
-export s3_access_key=""                 # IAM access key which will be used to communicate with AWS
-export s3_secret_key=""                 # IAM secret key which will be used to communicate with AWS
-export s3_sqs_queue=""                  # AWS SQS endpoint URI that will be used for retrieving bucket/object notificiations
-export s3_region="us-east-1"            # (optional) AWS Region for buckets
-export s3_bucket_name_regex_filter=".*" # (optional) Filter bucket names to display in WebUI
-
-cd deployment
-./install_chatqna.sh <command options>
-```
-
-#### S3 API Compatible Storage
-To use other storage server that is compatible with S3 API, follow similar steps as in the above AWS S3 storage with substitution to your s3-compatible endpoint settings. Set the `edp_storage_type` environment variable to "s3compatible" and provide the required configuration via additional environment variables:
-
-```bash
-export edp_storage_type="s3compatible"  # This will choose S3 as storage type for EDP
-export s3_access_key=                   # S3 compatible storage access key
-export s3_secret_key=                   # S3 compatible storage secret key
-export s3_compatible_endpoint=          # S3 compatible storage endpoint
-export s3_region=""                     # (optional) Region if it is required by the S3 compatible storage
-export s3_bucket_name_regex_filter=".*" # (optional) Filter bucket names to display in WebUI
-
-cd deployment
-./install_chatqna.sh <command options>
-```
-> Note: If your S3-compatible backend does not support bucket event notifications, you must enable scheduled or manual synchronization. See the [Storage Synchronization section](#storage-synchronization) for instructions.
-
-
-Then deploy using `install_chatqna.sh`. Example for development:
-```bash
-./install_chatqna.sh --auth --deploy reference-cpu.yaml  --ui --kind
-```
-
-After successful deployment, upload files using either WebGUI or cURL:
-
-```bash
-curl -X PUT "https://localhost:9191/default/test.txt" --upload-file test.txt -H "Content-Type: application/octet-stream" -k
-```
-
 ## Storage Synchronization
 If the configured S3-compatible storage does not support bucket notifications, files uploaded to the storage will not be automatically registered in the EDP database, and they won't be visible in the ERAG UI.
 
@@ -168,6 +109,85 @@ You can also manually schedule the synchronization task. To run the synchronizat
 - `POST /api/files/sync/` to backend container form within the cluster.
 - `POST /api/v1/edp/files/sync` to WebUI - this requires passing `Authorization` token.
 
+## RBAC (Role-Based Access Control)
+
+RBAC in EDP (Enterprise Data Platform) is implemented to manage and restrict access to data based on roles and permissions. The following outlines four distinct RBAC modes, each with its own approach to access control:
+
+### 1. None
+- **Description**: No access control policies are enforced.
+- **Implementation**: This mode bypasses RBAC entirely, granting unrestricted access to all data.
+- **Use Case**: Suitable for scenarios where data access restrictions are unnecessary, such as testing or environments where security is not a concern.
+
+### 2. Always
+- **Description**: Access is verified for every request.
+- **Implementation**:
+  - Every data access request is sent to an external security provider for validation.
+  - The security provider checks the user's role and permissions against the latest mappings.
+- **Trade-offs**:
+  - **Pros**: Ensures the most up-to-date access control.
+  - **Cons**: Adds latency to the data pipeline due to frequent external requests.
+- **Use Case**: Ideal for environments requiring strict and real-time access control.
+
+### 3. Cached
+- **Description**: Combines external validation with caching for improved performance.
+- **Implementation**:
+  - The first request for a resource is validated by the external security provider.
+  - Subsequent requests use cached responses, with a Time-To-Live (TTL) expiration to ensure periodic updates.
+- **Trade-offs**:
+  - **Pros**: Reduces latency for repeated requests.
+  - **Cons**: Permission changes on the security provider may take time to reflect due to caching.
+- **Use Case**: Suitable for balancing security and performance in high-traffic environments.
+
+### 4. Static
+- **Description**: Uses predefined mappings for access control. This is configured by setting the VECTOR_DB_RBAC_STATIC_CONFIG environment variable. It has to be in JSON format. It can be an array - limiting to a static list of buckets, or a dict mapped as key=user_id, value=array_of_buckets.
+- **Implementation**:
+  - Access is determined by static mappings of groups or buckets.
+  - No external security provider is involved, and changes require manual updates.
+- **Trade-offs**:
+  - **Pros**: Simple and independent of external systems.
+  - **Cons**: No synchronization with external changes; requires manual intervention for updates.
+- **Use Case**: Best for environments with stable and predictable access requirements.
+
+Each RBAC mode in EDP offers a different balance between security, performance, and flexibility. The choice of mode depends on the specific requirements of the environment, such as latency tolerance, frequency of permission changes, and reliance on external security providers.
+
+RBAC usage is optional and even though configured, retrieval services are not required to use it. This provides only additional API to select limited list of bucket access.
+
+The storage itself acts as the source of truth for access validation. This ensures that requests are validated directly against the storage's access control policies, providing a robust and consistent mechanism for enforcing permissions.
+
+A graph showing the validation flow should look as follows:
+
+```
+   ┌───────────────┐                                                                           
+   │               │                                                                           
+   │ Authorization │                               ┌───────────────┐                           
+   │               │                               │               │                           
+   └───────┬───────┘                               │   Vector DB   │                           
+           │                                       │               │                           
+ Authorization Header                              └───────▲───────┘                           
+           │                                               │                                   
+           │                                               │6                                  
+   ┌───────▼───────┐       ┌───────────────┐       ┌───────┴───────┐        ┌───────────────┐  
+   │               │  ...  │               │   1   │               │   7    │               │  
+   │    Step 1     ├───────►    Step 2     ├───────►   Retrieval   ├────────►    Step N     │  
+   │               │       │               │       │               │        │               │  
+   └───────────────┘       └───────────────┘       └───┬───────▲───┘        └───────────────┘  
+                                                       │       │                               
+                                                      2│       │5                              
+                                                       │       │                               
+                           ┌───────────────┐       ┌───▼───────┴───┐   4    ┌───────────────┐  
+                           │     Cache     ◄───────┤               ◄────────┤               │  
+                           │               │       │  EDP Backend  │        │  Storage API  │  
+                           │  (Optional)   ├───────►               ├────────►               │  
+                           └───────────────┘       └───────────────┘   3    └───────────────┘  
+```
+
+1. Request to retrieval pipeline step. If VECTOR_DB_RBAC is disabled on retriever, skip to step 7.
+2. Retrieve bucket list using with read access using current Authorization header.
+3. Call storage API using service key for list of available buckets. Limit it using built in regex filter. 
+4. For each bucket check if user can read a random file within in that bucket using credentials based on passed Authorization header.
+5. Respond with a list containing all buckets with read permission using user permissions.
+6. Limit vector query scope to elements belonging to retrieved bucket list.
+7. Pass filtered results further down the pipeline
 
 ## Setup
 
@@ -188,7 +208,10 @@ If you want to utilize all functionality, depending on the application server yo
 |         | BUCKET_NAME_REGEX_FILTER   | Regex filter for filtering out available buckets by name |
 |         | CELERY_BROKER_URL          | URL for Celery broker |
 |         | CELERY_BACKEND_URL         | URL for Celery backend |
-|         | DATAPREP_ENDPOINT          | Endpoint for data preparation service |
+|         | HIERARCHICAL_DATAPREP_ENDPOINT | Endpoint for hierarchical dataprep service |
+|         | TEXT_EXTRACTOR_ENDPOINT       | Endpoint for text extractor service |
+|         | TEXT_COMPRESSION_ENDPOINT | Endpoint for text compression service |
+|         | TEXT_SPLITTER_ENDPOINT     | Endpoint for text splitter service |
 |         | EMBEDDING_ENDPOINT         | Endpoint for embedding service |
 |         | INGESTION_ENDPOINT         | Endpoint for ingestion service |
 |         | DATABASE_HOST              | Host for PostgreSQL database |
@@ -218,6 +241,9 @@ If you want to utilize all functionality, depending on the application server yo
 |         | MINIO_ACCESS_KEY           | Access key either to MinIO or S3 IAM user |
 |         | MINIO_SECRET_KEY           | Secret key either to MinIO or S3 IAM user |
 |         | BUCKET_NAME_REGEX_FILTER   | Regex filter for filtering out available buckets by name |
+|         | VECTOR_DB_RBAC                  | Set the type of RBAC bucket filtering |
+|         | VECTOR_DB_RBAC_STATIC_CONFIG    | Configuration of STATIC rbac settings |
+|         | VECTOR_DB_RBAC_CACHE_EXPIRATION | Configuration of entry TTL for CACHED rbac settings |
 | Sqs     | AWS_SQS_EVENT_QUEUE_URL    | AWS SQS Queue url to listen for S3 events |
 |         | EDP_BACKEND_ENDPOINT       | Endpoint to backend service |
 |         | AWS_DEFAULT_REGION         | Base region for EDP S3 buckets |
@@ -342,9 +368,11 @@ Run a simple S3 mock server. Port 9191 will be used to expose a https server wit
 docker run --rm -p 9191:9191 -e initialBuckets=default,secondary -t adobe/s3mock
 ```
 
-Configure EDP for the S3 compatible storage by either exporting environment variables or setting values in your config.yaml.
+The following placeholder `<your-IP-address>` should be replaced with the external IP address of the host machine where the Docker container is being executed.
 
-Example config.yaml snippet:
+Configure EDP for the S3 compatible storage by either exporting environment variables or setting values in your `config.yaml`. If using an environment that requires proxy usage, ensure that you add `<your-IP-address>` to the `noProxy` variable in `config.yaml`.
+
+Example `config.yaml` snippet to configure S3 compatible storage:
 
 ```yaml
 edp:
@@ -358,6 +386,8 @@ edp:
     internalUrl: "https://<your-IP-address>:9191"
     externalUrl: "https://<your-IP-address>:9191"
     bucketNameRegexFilter: ".*"
+    edpExternalCertVerify: false
+    edpInternalCertVerify: false
 ```
 
 Since this mock endpoint does not support event notifications, make sure scheduled synchronization is enabled as described in the [synchronization section](#storage-synchronization).

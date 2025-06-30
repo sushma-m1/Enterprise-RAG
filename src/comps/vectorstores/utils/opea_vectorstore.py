@@ -46,7 +46,8 @@ class OPEAVectorStore():
         self._vector_store_name = vector_store_name
 
         self._SUPPORTED_VECTOR_STORES = {
-            "redis": self._import_redis
+            "redis": self._import_redis,
+            "redis-cluster": self._import_redis
         }
 
         if self._vector_store_name not in self._SUPPORTED_VECTOR_STORES:
@@ -80,21 +81,40 @@ class OPEAVectorStore():
             field_value=search_field_value
         )
 
-    def search(self, input: EmbedDoc) -> SearchedDoc:
+    def search(self, input: EmbedDoc, filter_expression: Optional[str] = None) -> SearchedDoc:
         """
         Performs a search in the vector store based on the input.
         Args:
             input (EmbedDoc): The input for the search.
+            filter_expression (str, optional): The filter expression for metadata filtering before the search. Defaults to None.
         Returns:
             SearchedDoc: The result of the search.
         """
         search_res = None
         if input.search_type == "similarity":
-            search_res = self.vector_store.similarity_search_by_vector(input.text, input.embedding, input.k)
+            search_res = self.vector_store.similarity_search_by_vector(
+                input_text=input.text,
+                embedding=input.embedding,
+                k=input.k,
+                filter_expression=filter_expression
+            )
+        elif input.search_type == "similarity_search_with_siblings":
+            search_res = self.vector_store.similarity_search_with_siblings(
+                input_text=input.text,
+                embedding=input.embedding,
+                k=input.k,
+                filter_expression=filter_expression
+            )
         elif input.search_type == "similarity_distance_threshold":
             if input.distance_threshold is None:
                 raise ValueError("distance_threshold must be provided for similarity_distance_threshold retriever")
-            search_res = self.vector_store.similarity_search_by_vector(input.text, input.embedding, input.k, input.distance_threshold)
+            search_res = self.vector_store.similarity_search_by_vector(
+                input_text=input.text,
+                embedding=input.embedding,
+                k=input.k,
+                distance_threshold=input.distance_threshold,
+                filter_expression=filter_expression
+            )
         elif input.search_type == "similarity_score_threshold":
             raise NotImplementedError("similarity_score_threshold is not implemented")
         elif input.search_type == "mmr":
@@ -102,6 +122,18 @@ class OPEAVectorStore():
         else:
             raise ValueError(f"Invalid search type: {input.search_type}")
         return search_res
+
+    def get_links_filter_expression(self):
+        return self.vector_store.get_links_filter_expression()
+
+    def empty_filter_expression(self):
+        return self.vector_store.empty_filter_expression()
+
+    def get_bucket_name_filter_expression(self, bucket_names: List[str]):
+        return self.vector_store.get_bucket_name_filter_expression(bucket_names)
+
+    def get_object_name_filter_expression(self, bucket_name: str, object_name: str):
+        return self.vector_store.get_object_name_filter_expression(bucket_name, object_name)
 
     def _import_redis(self):
         """
