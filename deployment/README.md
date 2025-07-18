@@ -137,7 +137,7 @@ certs:
   pathToKey: "" # Provide absolute path to key
 
 registry: "docker.io/opea" # alternatively "localhost:5000/erag" for local registry
-tag: "1.3.0"
+tag: "1.3.1"
 setup_registry: true # this is localhost registry that may be used for localhost one-node deployment
 use_alternate_tagging: false # changes format of images from registry/image:tag to registry:image_tag
 helm_timeout: "10m0s"
@@ -233,6 +233,11 @@ fingerprint:
 > The default LLM for Xeon execution is `casperhansen/llama-3-8b-instruct-awq`.
 > Ensure your HUGGINGFACEHUB_API_TOKEN grants access to this model.
 > Refer to the [official Hugging Face documentation](https://huggingface.co/docs/hub/models-gated) for instructions on accessing gated models.
+
+> [!NOTE]
+> To achieve optimal performance on Intel® Xeon® processors, additional configuration adjustments may be required.
+> For detailed guidance, refer to the [Performance tuning tips](../docs/performance_tuning_tips.md).
+
 
 ### Storage
 #### Storage Class
