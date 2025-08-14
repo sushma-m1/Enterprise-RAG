@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 FROM python:3.11-slim
-COPY --from=ghcr.io/astral-sh/uv:0.5.26 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.8.0 /uv /uvx /bin/
 
 ENV LANG=C.UTF-8
 
@@ -11,7 +11,7 @@ ENV MKL_THREADING_LAYER=GNU
 
 RUN apt-get -y update                           \
  && apt-get install -y                          \
-    openjdk-17-jdk                              \
+    openjdk-21-jdk                              \
     numactl                                     \
     libjemalloc-dev                             \
     google-perftools                            \

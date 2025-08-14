@@ -3,8 +3,8 @@
 
 # Dockerfile for the RAG LLM Guard Dataprep Guardrail microservice
 
-FROM python:3.11-slim
-COPY --from=ghcr.io/astral-sh/uv:0.5.26 /uv /uvx /bin/
+FROM python:3.11-slim-bookworm
+COPY --from=ghcr.io/astral-sh/uv:0.8.0 /uv /uvx /bin/
 
 # Install system packages needed for building
 RUN apt-get update -y && \
